@@ -2,6 +2,7 @@ package market
 
 import (
 	addr "github.com/filecoin-project/go-address"
+	cborutil "github.com/filecoin-project/go-cbor-util"
 	cid "github.com/ipfs/go-cid"
 
 	abi "github.com/filecoin-project/specs-actors/actors/abi"
@@ -56,6 +57,14 @@ func (p *DealProposal) ClientBalanceRequirement() abi.TokenAmount {
 
 func (p *DealProposal) ProviderBalanceRequirement() abi.TokenAmount {
 	return p.ProviderCollateral
+}
+
+func (p *DealProposal) Cid() (cid.Cid, error) {
+	nd, err := cborutil.AsIpld(p)
+	if err != nil {
+		return cid.Undef, err
+	}
+	return nd.Cid(), nil
 }
 
 type DealState struct {
