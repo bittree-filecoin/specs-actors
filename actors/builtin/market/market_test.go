@@ -298,6 +298,157 @@ func TestMarketActor(t *testing.T) {
 	})
 }
 
+func TestMarketActorDeals(t *testing.T) {
+	marketActor := tutil.NewIDAddr(t, 100)
+	owner := tutil.NewIDAddr(t, 101)
+	provider := tutil.NewIDAddr(t, 102)
+	worker := tutil.NewIDAddr(t, 103)
+	client := tutil.NewIDAddr(t, 104)
+
+	var st market.State
+
+	setup := func() (*mock.Runtime, *marketActorTestHarness) {
+		builder := mock.NewBuilder(context.Background(), marketActor).
+			WithCaller(builtin.SystemActorAddr, builtin.InitActorCodeID).
+			WithActorType(owner, builtin.AccountActorCodeID).
+			WithActorType(worker, builtin.AccountActorCodeID).
+			WithActorType(provider, builtin.StorageMinerActorCodeID).
+			WithActorType(client, builtin.AccountActorCodeID)
+
+		rt := builder.Build(t)
+
+		actor := marketActorTestHarness{t: t}
+		actor.constructAndVerify(rt)
+
+		return rt, &actor
+	}
+
+	t.Run("simple construction", func(t *testing.T) {
+		actor := market.Actor{}
+		receiver := tutil.NewIDAddr(t, 100)
+		builder := mock.NewBuilder(context.Background(), receiver).
+			WithCaller(builtin.SystemActorAddr, builtin.InitActorCodeID)
+
+		rt := builder.Build(t)
+
+		rt.ExpectValidateCallerAddr(builtin.SystemActorAddr)
+
+		ret := rt.Call(actor.Constructor, nil).(*adt.EmptyValue)
+		assert.Nil(t, ret)
+		rt.Verify()
+
+		store := adt.AsStore(rt)
+
+		emptyMap, err := adt.MakeEmptyMap(store).Root()
+		assert.NoError(t, err)
+
+		emptyArray, err := adt.MakeEmptyArray(store).Root()
+		assert.NoError(t, err)
+
+		emptyMultiMap, err := market.MakeEmptySetMultimap(store).Root()
+		assert.NoError(t, err)
+
+		var state market.State
+		rt.GetState(&state)
+
+		assert.Equal(t, emptyArray, state.Proposals)
+		assert.Equal(t, emptyArray, state.States)
+		assert.Equal(t, emptyMap, state.EscrowTable)
+		assert.Equal(t, emptyMap, state.LockedTable)
+		assert.Equal(t, abi.DealID(0), state.NextID)
+		assert.Equal(t, emptyMultiMap, state.DealOpsByEpoch)
+		assert.Equal(t, abi.ChainEpoch(-1), state.LastCron)
+	})
+
+	t.Run("AddBalance", func(t *testing.T) {
+		t.Run("adds to provider escrow funds", func(t *testing.T) {
+
+			// Test adding provider funds from both worker and owner address
+			for _, callerAddr := range []address.Address{owner, worker} {
+				rt, actor := setup()
+
+				rt.SetCaller(callerAddr, builtin.AccountActorCodeID)
+				rt.SetReceived(abi.NewTokenAmount(10000))
+				actor.expectProviderControlAddressesAndValidateCaller(rt, provider, owner, worker)
+
+				rt.Call(actor.AddBalance, &provider)
+
+				rt.Verify()
+
+				rt.GetState(&st)
+				assert.Equal(t, abi.NewTokenAmount(10000), st.GetEscrowBalance(rt, provider))
+			}
+		})
+
+		t.Run("can submit a deal", func(t *testing.T) {
+			rt, actor := setup()
+
+			rt.SetReceived(abi.NewTokenAmount(10))
+			fakeCid := tutil.MakeCID("a piece cid")
+
+			params := &market.PublishStorageDealsParams{
+				Deals: []market.ClientDealProposal{
+					market.ClientDealProposal{
+						Proposal: market.DealProposal{
+							PieceCID:  fakeCid,
+							PieceSize: abi.PaddedPieceSize(100),
+							Client:    client,
+							Provider:  provider,
+
+							StartEpoch:           100,
+							EndEpoch:             200,
+							StoragePricePerEpoch: abi.NewTokenAmount(1),
+
+							ProviderCollateral: abi.NewTokenAmount(1),
+							ClientCollateral:   abi.NewTokenAmount(1),
+						},
+					},
+				},
+			}
+
+			rt.ExpectValidateCallerAddr(worker)
+			rt.ExpectValidateCallerType(builtin.AccountActorCodeID, builtin.MultisigActorCodeID)
+			rt.ExpectSend(provider, builtin.MethodsMiner.ControlAddresses, nil, abi.NewTokenAmount(0), &miner.GetControlAddressesReturn{Worker: worker, Owner: owner}, 0)
+			//func (rt *Runtime) ExpectSend(toAddr addr.Address, methodNum abi.MethodNum, params runtime.CBORMarshaler, value abi.TokenAmount, ret runtime.CBORMarshaler, exitCode exitcode.ExitCode) {
+
+			rt.SetCaller(worker, builtin.AccountActorCodeID)
+			rt.Call(actor.PublishStorageDeals, params)
+
+			rt.Verify()
+		})
+
+		t.Run("adds to non-provider escrow funds", func(t *testing.T) {
+			testCases := []struct {
+				delta int64
+				total int64
+			}{
+				{10, 10},
+				{20, 30},
+				{40, 70},
+			}
+
+			// Test adding non-provider funds from both worker and client addresses
+			for _, callerAddr := range []address.Address{client, worker} {
+				rt, actor := setup()
+
+				for _, tc := range testCases {
+					rt.SetCaller(callerAddr, builtin.AccountActorCodeID)
+					rt.SetReceived(abi.NewTokenAmount(tc.delta))
+					rt.ExpectValidateCallerType(builtin.CallerTypesSignable...)
+
+					rt.Call(actor.AddBalance, &callerAddr)
+
+					rt.Verify()
+
+					rt.GetState(&st)
+					assert.Equal(t, abi.NewTokenAmount(tc.total), st.GetEscrowBalance(rt, callerAddr))
+				}
+			}
+		})
+	})
+
+}
+
 type marketActorTestHarness struct {
 	market.Actor
 	t testing.TB
