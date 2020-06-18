@@ -375,7 +375,6 @@ func TestMarketActorDeals(t *testing.T) {
 	}
 
 	// First attempt at publishing the deal should work
-	rt.ExpectValidateCallerAddr(worker)
 	rt.ExpectValidateCallerType(builtin.AccountActorCodeID, builtin.MultisigActorCodeID)
 	rt.ExpectSend(provider, builtin.MethodsMiner.ControlAddresses, nil, abi.NewTokenAmount(0), &miner.GetControlAddressesReturn{Worker: worker, Owner: owner}, 0)
 
@@ -383,9 +382,9 @@ func TestMarketActorDeals(t *testing.T) {
 
 	rt.SetCaller(worker, builtin.AccountActorCodeID)
 	rt.Call(actor.PublishStorageDeals, params)
+	rt.Verify()
 
 	// Second attempt at publishing the same deal should fail
-	rt.ExpectValidateCallerAddr(worker)
 	rt.ExpectValidateCallerType(builtin.AccountActorCodeID, builtin.MultisigActorCodeID)
 	rt.ExpectSend(provider, builtin.MethodsMiner.ControlAddresses, nil, abi.NewTokenAmount(0), &miner.GetControlAddressesReturn{Worker: worker, Owner: owner}, 0)
 
@@ -395,8 +394,7 @@ func TestMarketActorDeals(t *testing.T) {
 		rt.Call(actor.PublishStorageDeals, params)
 	})
 
-	// TODO: calling rt.Verify fails... not clear why
-	//rt.Verify()
+	rt.Verify()
 }
 
 type marketActorTestHarness struct {
