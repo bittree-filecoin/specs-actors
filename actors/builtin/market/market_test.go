@@ -310,6 +310,38 @@ func TestMarketActor(t *testing.T) {
 	})
 }
 
+func basicMarketSetup(t *testing.T, ma, owner, provider, worker, client address.Address) (*mock.Runtime, *marketActorTestHarness) {
+	builder := mock.NewBuilder(context.Background(), ma).
+		WithCaller(builtin.SystemActorAddr, builtin.InitActorCodeID).
+		WithActorType(owner, builtin.AccountActorCodeID).
+		WithActorType(worker, builtin.AccountActorCodeID).
+		WithActorType(provider, builtin.StorageMinerActorCodeID).
+		WithActorType(client, builtin.AccountActorCodeID)
+
+	rt := builder.Build(t)
+
+	actor := marketActorTestHarness{t: t}
+	actor.constructAndVerify(rt)
+
+	return rt, &actor
+}
+
+func mkDealProposal(client, prov address.Address) market.DealProposal {
+	return market.DealProposal{
+		PieceCID:  tutil.MakeCID("a piece cid"),
+		PieceSize: abi.PaddedPieceSize(100),
+		Client:    client,
+		Provider:  prov,
+
+		StartEpoch:           100,
+		EndEpoch:             200,
+		StoragePricePerEpoch: abi.NewTokenAmount(1),
+
+		ProviderCollateral: abi.NewTokenAmount(1),
+		ClientCollateral:   abi.NewTokenAmount(1),
+	}
+}
+
 func TestMarketActorDeals(t *testing.T) {
 	marketActor := tutil.NewIDAddr(t, 100)
 	owner := tutil.NewIDAddr(t, 101)
@@ -319,24 +351,8 @@ func TestMarketActorDeals(t *testing.T) {
 
 	var st market.State
 
-	setup := func() (*mock.Runtime, *marketActorTestHarness) {
-		builder := mock.NewBuilder(context.Background(), marketActor).
-			WithCaller(builtin.SystemActorAddr, builtin.InitActorCodeID).
-			WithActorType(owner, builtin.AccountActorCodeID).
-			WithActorType(worker, builtin.AccountActorCodeID).
-			WithActorType(provider, builtin.StorageMinerActorCodeID).
-			WithActorType(client, builtin.AccountActorCodeID)
-
-		rt := builder.Build(t)
-
-		actor := marketActorTestHarness{t: t}
-		actor.constructAndVerify(rt)
-
-		return rt, &actor
-	}
-
 	// Test adding provider funds from both worker and owner address
-	rt, actor := setup()
+	rt, actor := basicMarketSetup(t, marketActor, owner, provider, worker, client)
 
 	rt.SetCaller(owner, builtin.AccountActorCodeID)
 	rt.SetReceived(abi.NewTokenAmount(10000))
@@ -352,49 +368,54 @@ func TestMarketActorDeals(t *testing.T) {
 	actor.addParticipantFunds(rt, client, abi.NewTokenAmount(10000))
 
 	rt.SetReceived(abi.NewTokenAmount(10))
-	fakeCid := tutil.MakeCID("a piece cid")
 
 	params := &market.PublishStorageDealsParams{
 		Deals: []market.ClientDealProposal{
 			market.ClientDealProposal{
-				Proposal: market.DealProposal{
-					PieceCID:  fakeCid,
-					PieceSize: abi.PaddedPieceSize(100),
-					Client:    client,
-					Provider:  provider,
-
-					StartEpoch:           100,
-					EndEpoch:             200,
-					StoragePricePerEpoch: abi.NewTokenAmount(1),
-
-					ProviderCollateral: abi.NewTokenAmount(1),
-					ClientCollateral:   abi.NewTokenAmount(1),
-				},
+				Proposal: mkDealProposal(client, provider),
 			},
 		},
 	}
 
 	// First attempt at publishing the deal should work
-	rt.ExpectValidateCallerType(builtin.AccountActorCodeID, builtin.MultisigActorCodeID)
-	rt.ExpectSend(provider, builtin.MethodsMiner.ControlAddresses, nil, abi.NewTokenAmount(0), &miner.GetControlAddressesReturn{Worker: worker, Owner: owner}, 0)
+	{
+		rt.ExpectValidateCallerType(builtin.AccountActorCodeID, builtin.MultisigActorCodeID)
+		rt.ExpectSend(provider, builtin.MethodsMiner.ControlAddresses, nil, abi.NewTokenAmount(0), &miner.GetControlAddressesReturn{Worker: worker, Owner: owner}, 0)
 
-	rt.ExpectVerifySignature(crypto.Signature{}, client, mustCbor(&params.Deals[0].Proposal), nil)
+		rt.ExpectVerifySignature(crypto.Signature{}, client, mustCbor(&params.Deals[0].Proposal), nil)
 
-	rt.SetCaller(worker, builtin.AccountActorCodeID)
-	rt.Call(actor.PublishStorageDeals, params)
-	rt.Verify()
+		rt.SetCaller(worker, builtin.AccountActorCodeID)
+		rt.Call(actor.PublishStorageDeals, params)
+		rt.Verify()
+	}
 
 	// Second attempt at publishing the same deal should fail
-	rt.ExpectValidateCallerType(builtin.AccountActorCodeID, builtin.MultisigActorCodeID)
-	rt.ExpectSend(provider, builtin.MethodsMiner.ControlAddresses, nil, abi.NewTokenAmount(0), &miner.GetControlAddressesReturn{Worker: worker, Owner: owner}, 0)
+	{
+		rt.ExpectValidateCallerType(builtin.AccountActorCodeID, builtin.MultisigActorCodeID)
+		rt.ExpectSend(provider, builtin.MethodsMiner.ControlAddresses, nil, abi.NewTokenAmount(0), &miner.GetControlAddressesReturn{Worker: worker, Owner: owner}, 0)
 
-	rt.ExpectVerifySignature(crypto.Signature{}, client, mustCbor(&params.Deals[0].Proposal), nil)
-	rt.SetCaller(worker, builtin.AccountActorCodeID)
-	rt.ExpectAbort(exitcode.ErrIllegalState, func() {
+		rt.ExpectVerifySignature(crypto.Signature{}, client, mustCbor(&params.Deals[0].Proposal), nil)
+		rt.SetCaller(worker, builtin.AccountActorCodeID)
+		rt.ExpectAbort(exitcode.ErrIllegalState, func() {
+			rt.Call(actor.PublishStorageDeals, params)
+		})
+
+		rt.Verify()
+	}
+
+	params.Deals[0].Proposal.Label = "foo"
+
+	// Same deal with a different label should work
+	{
+		rt.ExpectValidateCallerType(builtin.AccountActorCodeID, builtin.MultisigActorCodeID)
+		rt.ExpectSend(provider, builtin.MethodsMiner.ControlAddresses, nil, abi.NewTokenAmount(0), &miner.GetControlAddressesReturn{Worker: worker, Owner: owner}, 0)
+
+		rt.ExpectVerifySignature(crypto.Signature{}, client, mustCbor(&params.Deals[0].Proposal), nil)
+		rt.SetCaller(worker, builtin.AccountActorCodeID)
 		rt.Call(actor.PublishStorageDeals, params)
-	})
 
-	rt.Verify()
+		rt.Verify()
+	}
 }
 
 type marketActorTestHarness struct {
