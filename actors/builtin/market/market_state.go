@@ -23,8 +23,11 @@ const epochUndefined = abi.ChainEpoch(-1)
 // end deal (miner terminate, expire(no activation))
 
 type State struct {
-	Proposals        cid.Cid // AMT[DealID]DealProposal
-	States           cid.Cid // AMT[DealID]DealState
+	Proposals cid.Cid // AMT[DealID]DealProposal
+	States    cid.Cid // AMT[DealID]DealState
+
+	// PendingProposals tracks proposals that have not yet reached their deal start date.
+	// We track them here to ensure that miners can't publish the same deal proposal twice
 	PendingProposals cid.Cid // HAMT[DealCid]DealProposal
 
 	// Total amount held in escrow, indexed by actor address (including both locked and unlocked amounts).
@@ -170,7 +173,7 @@ func (st *State) deleteDeal(rt Runtime, dealID abi.DealID) {
 // Deal start deadline elapsed without appearing in a proven sector.
 // Delete deal, slash a portion of provider's collateral, and unlock remaining collaterals
 // for both provider and client.
-func (st *State) processDealInitTimedOut(rt Runtime, et, lt *adt.BalanceTable, pending *adt.Map, dealID abi.DealID, deal *DealProposal, state *DealState) abi.TokenAmount {
+func (st *State) processDealInitTimedOut(rt Runtime, et, lt *adt.BalanceTable, dealID abi.DealID, deal *DealProposal, state *DealState) abi.TokenAmount {
 	Assert(state.SectorStartEpoch == epochUndefined)
 
 	st.unlockBalance(lt, deal.Client, deal.ClientBalanceRequirement())
@@ -183,15 +186,6 @@ func (st *State) processDealInitTimedOut(rt Runtime, et, lt *adt.BalanceTable, p
 	}
 
 	st.unlockBalance(lt, deal.Provider, amountRemaining)
-
-	pc, err := deal.Cid()
-	if err != nil {
-		rt.Abortf(exitcode.ErrIllegalState, "failed to get deal proposal cid: %v", err)
-	}
-
-	if err := pending.Delete(adt.CidKey(pc)); err != nil {
-		rt.Abortf(exitcode.ErrIllegalState, "failed to delete pending proposal: %v", err)
-	}
 
 	st.deleteDeal(rt, dealID)
 	return amountSlashed

@@ -1,9 +1,11 @@
 package market
 
 import (
+	"bytes"
+
 	addr "github.com/filecoin-project/go-address"
-	cborutil "github.com/filecoin-project/go-cbor-util"
 	cid "github.com/ipfs/go-cid"
+	mh "github.com/multiformats/go-multihash"
 
 	abi "github.com/filecoin-project/specs-actors/actors/abi"
 	big "github.com/filecoin-project/specs-actors/actors/abi/big"
@@ -63,11 +65,23 @@ func (p *DealProposal) ProviderBalanceRequirement() abi.TokenAmount {
 }
 
 func (p *DealProposal) Cid() (cid.Cid, error) {
-	nd, err := cborutil.AsIpld(p)
+	buf := new(bytes.Buffer)
+	if err := p.MarshalCBOR(buf); err != nil {
+		return cid.Undef, err
+	}
+	b := buf.Bytes()
+
+	mhType := uint64(mh.BLAKE2B_MIN + 31)
+	mhLen := -1
+
+	hash, err := mh.Sum(b, mhType, mhLen)
 	if err != nil {
 		return cid.Undef, err
 	}
-	return nd.Cid(), nil
+
+	c := cid.NewCidV1(cid.DagCBOR, hash)
+
+	return c, nil
 }
 
 type DealState struct {

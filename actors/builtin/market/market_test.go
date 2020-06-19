@@ -396,7 +396,7 @@ func TestMarketActorDeals(t *testing.T) {
 
 		rt.ExpectVerifySignature(crypto.Signature{}, client, mustCbor(&params.Deals[0].Proposal), nil)
 		rt.SetCaller(worker, builtin.AccountActorCodeID)
-		rt.ExpectAbort(exitcode.ErrIllegalState, func() {
+		rt.ExpectAbort(exitcode.ErrIllegalArgument, func() {
 			rt.Call(actor.PublishStorageDeals, params)
 		})
 

@@ -2,6 +2,7 @@ package market
 
 import (
 	addr "github.com/filecoin-project/go-address"
+	xerrors "golang.org/x/xerrors"
 
 	cbg "github.com/whyrusleeping/cbor-gen"
 
@@ -194,9 +195,7 @@ func (a Actor) PublishStorageDeals(rt Runtime, params *PublishStorageDealsParams
 		}
 
 		pending, err := adt.AsMap(adt.AsStore(rt), st.PendingProposals)
-		if err != nil {
-			rt.Abortf(exitcode.ErrIllegalState, "failed to load pending proposals map: %s", err)
-		}
+		builtin.RequireNoErr(rt, err, exitcode.ErrIllegalState, "failed to load pending proposals map: %s", err)
 
 		dealOps, err := AsSetMultimap(adt.AsStore(rt), st.DealOpsByEpoch)
 		if err != nil {
@@ -235,7 +234,7 @@ func (a Actor) PublishStorageDeals(rt Runtime, params *PublishStorageDealsParams
 			}
 
 			if has {
-				rt.Abortf(exitcode.ErrIllegalState, "cannot publish duplicate deals")
+				rt.Abortf(exitcode.ErrIllegalArgument, "cannot publish duplicate deals")
 			}
 
 			if err := pending.Put(adt.CidKey(pcid), &deal.Proposal); err != nil {
@@ -308,9 +307,7 @@ func (a Actor) VerifyDealsOnSectorProveCommit(rt Runtime, params *VerifyDealsOnS
 		}
 
 		pending, err := adt.AsMap(adt.AsStore(rt), st.PendingProposals)
-		if err != nil {
-			rt.Abortf(exitcode.ErrIllegalState, "load pending %v", err)
-		}
+		builtin.RequireNoErr(rt, err, exitcode.ErrIllegalState, "load pending %v", err)
 
 		proposals, err := AsDealProposalArray(adt.AsStore(rt), st.Proposals)
 		if err != nil {
@@ -356,10 +353,6 @@ func (a Actor) VerifyDealsOnSectorProveCommit(rt Runtime, params *VerifyDealsOnS
 				rt.Abortf(exitcode.ErrIllegalState, "set deal %v", err)
 			}
 
-			if err := pending.Delete(adt.CidKey(propc)); err != nil {
-				rt.Abortf(exitcode.ErrIllegalState, "failed to delete pending proposal: %v", err)
-			}
-
 			// Compute deal weight
 			dealDuration := big.NewInt(int64(proposal.Duration()))
 			dealSize := big.NewIntUnsigned(uint64(proposal.PieceSize))
@@ -371,11 +364,6 @@ func (a Actor) VerifyDealsOnSectorProveCommit(rt Runtime, params *VerifyDealsOnS
 				totalDealSpaceTime = big.Add(totalDealSpaceTime, dealSpaceTime)
 			}
 
-		}
-
-		st.PendingProposals, err = pending.Root()
-		if err != nil {
-			rt.Abortf(exitcode.ErrIllegalState, "failed to flush pending deals: %s", err)
 		}
 
 		st.States, err = states.Root()
@@ -524,12 +512,19 @@ func (a Actor) CronTick(rt Runtime, params *adt.EmptyValue) *adt.EmptyValue {
 				}
 
 				deal := st.mustGetDeal(rt, dealID)
+				dcid, err := deal.Cid()
+				if err != nil {
+					return xerrors.Errorf("failed to get cid for deal proposal: %w", err)
+				}
+				if err := pending.Delete(adt.CidKey(dcid)); err != nil {
+					rt.Abortf(exitcode.ErrIllegalState, "failed to delete pending proposal: %v", err)
+				}
 
 				if state.SectorStartEpoch == epochUndefined {
 					// Not yet appeared in proven sector; check for timeout.
 					AssertMsg(rt.CurrEpoch() >= deal.StartEpoch, "if sector start is not set, we must be in a timed out state")
 
-					slashed := st.processDealInitTimedOut(rt, et, lt, pending, dealID, deal, state)
+					slashed := st.processDealInitTimedOut(rt, et, lt, dealID, deal, state)
 					if !slashed.IsZero() {
 						amountSlashed = big.Add(amountSlashed, slashed)
 					}
