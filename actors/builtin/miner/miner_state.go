@@ -126,6 +126,7 @@ type SectorPreCommitInfo struct {
 	SealRandEpoch abi.ChainEpoch
 	DealIDs       []abi.DealID
 	Expiration    abi.ChainEpoch
+	ReplaceSector abi.SectorNumber // "Committed capacity" no-deal sector to replace, valid only with non-empty deals
 }
 
 // Information stored on-chain for a pre-committed sector.
